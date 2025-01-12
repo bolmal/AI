@@ -7,6 +7,7 @@ from openai import OpenAI
 from typing import List, Dict
 import time
 import json
+from datetime import datetime
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
@@ -204,11 +205,8 @@ async def crawl_and_parse_concerts():
     # GPT 파싱 처리
     parser = ConcertParser()
     parsed_results = parser.parse_multiple_concerts(crawled_concerts)
-    # print(crawled_concerts)
     print(parsed_results)
     return parsed_results
-    # return crawled_concerts
-
 
 # 실행 코드
 async def main():
@@ -216,10 +214,16 @@ async def main():
     results = await crawl_and_parse_concerts()
 
     # 결과 제출
-    print("\nMultiple Concerts Results:")
-    for idx, result in enumerate(results, 1):
-        print(f"\nConcert {idx}:")
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    current_dir = os.getcwd()
+    target_dir = os.path.join(current_dir, 'crawl_new_concerts')
+    os.makedirs(target_dir, exist_ok=True)
+    # 현재 날짜를 파일 이름으로 저장
+    current_date = datetime.now().strftime('%Y-%m-%d')  # 'YYYY-MM-DD' 형식
+    file_path = os.path.join(target_dir, f'{current_date}.json')
+
+    # JSON 파일로 저장
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
