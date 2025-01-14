@@ -16,17 +16,18 @@ class InterParkReviewCrawler:
             'bbsno': '10',
             'pageno': str(page_no),
             'stext': '',
-            'groupcode': '01003',  # 콘서트 카테고리 코드
+            'groupcode': '01003',  # 콘서트
             'sflag': '',
-            'sort': '',
-            'cate': '01003',      # 콘서트 카테고리
-            'no': '5709026',      # 게시판 번호
-            'groupno': '5709026', # 그룹 번호
+            'sort': 'New',  # 최신순 정렬
+            'cate': '01003',  # 콘서트
             'seq': '0',
-            'isBest': '',
-            'bestOnoff': ''
+            'isBest': 'N',  # 일반 리뷰
+            'bestOnoff': 'N',  # 베스트 OFF
+            'categorycode': '',  # 카테고리 코드
+            'stycode': '',  # 스타일 코드
+            'noticeYN': 'N'  # 공지사항 제외
         }
-        return f"{self.base_url+'/CommunityList.asp'}?{urlencode(params)}"
+        return f"{self.base_url+'CommunityList.asp'}?{urlencode(params)}"
 
     # 별점 이미지의 개수를 세는 메소드
     def count_stars(self, td):
@@ -57,13 +58,19 @@ class InterParkReviewCrawler:
                 row_data['star_rating'] = self.count_stars(star_td)
 
             # 기타 정보 추출
-            tds = tr.find_all('td', class_='texts')
+            texts_tds = tr.find_all('td', class_='texts')
+            textsmall_tds = tr.find_all('td', class_='textsmall')
+            tds = texts_tds + textsmall_tds
             for i, td in enumerate(tds):
                 column_name = {
                     0: 'title',
-                    1: 'writer',
-                    2: 'views',
-                    3: 'likes'
+                    1: 'review',
+                    2: 'view',
+                    3: 'likes',
+                    4: 'stars',
+                    5: 'blank',
+                    6: 'userid',
+                    7: 'date'
                 }.get(i, f'column_{i}')
 
                 row_data[column_name] = td.get_text(strip=True)
@@ -76,7 +83,6 @@ class InterParkReviewCrawler:
                 else:
                     print(f"Failed to crawl detail page for URL: {row_data['url']}")
                     row_data['title'] = 'NO NAME'
-                    return None
 
         except Exception as e:
             print(f"행 파싱 중 에러 발생: {str(e)}")
@@ -85,7 +91,7 @@ class InterParkReviewCrawler:
 
     # 리뷰 상세 페이지를 크롤링하는 메소드
     async def crawl_review_detail_page(self, url):
-        detailed_data = {}
+        detailed_data = None
         try:
             # 요청 및 파싱
             result = await self.crawler.arun(
@@ -108,15 +114,15 @@ class InterParkReviewCrawler:
                         print(f"concert_link : {href}\n")
                         concert_title = await self.crawl_review_concert_title_page(url=concert_link)
                         print(f"concert_title : {concert_title}\n")
-                        detailed_data['title'] = concert_title
+                        detailed_data = concert_title
                         break
             else:
                 print(f"No valid HTML content for URL: {url}")
-                detailed_data['title'] = None
+                detailed_data = None
 
         except Exception as e:
             print(f"Error crawling {url}: {e}")
-            detailed_data['title'] = None  # 오류 시 기본값 설정
+            detailed_data = None  # 오류 시 기본값 설정
 
         return detailed_data
 
@@ -146,14 +152,13 @@ class InterParkReviewCrawler:
             css_selector="table",
             process_iframes=True
         )
-
         if result and result.html:
             soup = BeautifulSoup(result.html, 'html.parser')
             target_tables = soup.find_all('table', attrs={'width': '100%', 'border': '0'})
 
             page_results = []
             for table in target_tables:
-                rows = table.find_all('tr')
+                rows = table.select('tbody > tr')
                 for row in rows:
                     row_data = await self.parse_table_row(row)
                     if row_data is not None:
@@ -176,9 +181,10 @@ class InterParkReviewCrawler:
             # 결과 저장
             if self.results:
                 df = pd.DataFrame(self.results)
-                #df = df.drop_duplicates()
-                df.to_csv('interpark_reviews.csv', index=False, encoding='utf-8-sig')
-                print(f"\n크롤링 완료: 총 {len(df)}개의 리뷰가 저장되었습니다.")
+                df = df.drop_duplicates()
+                filter_df = df.iloc[7:22, :10]  # :8은 column_8 이전의 열까지만 선택
+                filter_df.to_csv('interpark_reviews.csv', index=False, encoding='utf-8-sig')
+                print(f"\n크롤링 완료: 총 {len(filter_df)}개의 리뷰가 저장되었습니다.")
 
             else:
                 print("크롤링된 데이터가 없습니다.")
