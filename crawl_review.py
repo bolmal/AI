@@ -3,12 +3,23 @@ from crawl4ai import AsyncWebCrawler
 from bs4 import BeautifulSoup
 import pandas as pd
 from urllib.parse import urljoin, parse_qs, urlencode
+from playwright.async_api import async_playwright
+import re
+import json
 
 class InterParkReviewCrawler:
     def __init__(self):
         self.results = []
         self.base_url = "http://ticket.interpark.com/Community/Play/Talk/"
         self.crawler = None  # 크롤러 인스턴스를 클래스 레벨에서 관리
+
+    def convert_url(self,old_url):
+        match = re.search(r'GoodsCode=(\d+)', old_url)
+        if match:
+            goods_code = match.group(1)
+            new_url = f"https://api-ticketfront.interpark.com/v1/goods/{goods_code}/summary"
+            return new_url
+        return None
 
     def create_page_url(self, page_no):
         """페이지 URL 생성"""
@@ -21,8 +32,6 @@ class InterParkReviewCrawler:
             'sort': 'New',  # 최신순 정렬
             'cate': '01003',  # 콘서트
             'seq': '0',
-            'isBest': 'N',  # 일반 리뷰
-            'bestOnoff': 'N',  # 베스트 OFF
             'categorycode': '',  # 카테고리 코드
             'stycode': '',  # 스타일 코드
             'noticeYN': 'N'  # 공지사항 제외
@@ -129,20 +138,60 @@ class InterParkReviewCrawler:
     # 리뷰한 콘서트 제목 크롤링
     async def crawl_review_concert_title_page(self, url):
         try :
-            result = await self.crawler.arun(url=url)
+            new_url = self.convert_url(url)
+            result = await self.crawler.arun(
+                url=new_url,
+                process_iframes=True
+            )
             if result and result.html:
                 soup = BeautifulSoup(result.html, 'html.parser')
-                concert_title = soup.find('h2', class_='prdTitle')
-                if concert_title:
-                    print(f"concert_title : {concert_title}\n")
-                    print(f"concert_title : {concert_title.get_text().strip()}\n")
-                    return concert_title.get_text().strip()
-            else :
-                print("공연 제목 X")
+                # print(f"공연 제목 HTML: {result.html}")  # 문제 발생 URL 확인
+                # print(f"공연 제목 HTML: {soup.prettify()}")  # 문제 발생 URL 확인
+
+                # JSON 데이터가 포함된 <pre> 태그 찾기
+                pre_tag = soup.find('pre')
+                if pre_tag:
+                    data = json.loads(pre_tag.text)  # JSON 문자열 파싱
+                    goods_name = data.get('data', {}).get('goodsName')  # "goodsName" 추출
+                    # print(goods_name)
+                    return goods_name
+                return None
         except Exception as e:
-            print(f"공연 제목 크롤링 중 에러 발생: {str(e)}")
+            print(f"Error fetching rendered HTML from {url}: {e}")
             return None
 
+        #         concert_title = soup.find('h2', class_='prdTitle')
+        #         if concert_title:
+        #             print(f"concert_title1 : {concert_title}\n")
+        #             print(f"concert_title2 : {concert_title.get_text().strip()}\n")
+        #             return concert_title.get_text().strip()
+        #         else :
+        #             # 디버깅을 위한 정보
+        #             print("\n=== DEBUG INFO ===")
+        #             print("Page content length:", len(result.html))
+        #             print("\nFirst 200 chars of HTML:")
+        #             print(result.html[:200])
+        #             print("\nAll h2 tags:")
+        #             print([h2.get_text() for h2 in soup.find_all('h2')])
+        #
+        #             return concert_title.get_text().strip()
+        #     else :
+        #         print("공연 제목 X")
+        # except Exception as e:
+        #     print(f"공연 제목 크롤링 중 에러 발생: {str(e)}")
+        #     return None
+        # try:
+        #     async with async_playwright() as p:
+        #         browser = await p.chromium.launch(headless=True)  # 백그라운드 실행
+        #         page = await browser.new_page()
+        #         await page.goto(url, timeout=60000, wait_until='networkidle')  # 네트워크 요청 완료 대기
+        #         rendered_html = await page.content()  # 렌더링된 HTML 가져오기
+        #         await browser.close()
+        #         print(f"힘들다 {rendered_html}")
+        #         return None
+        # except Exception as e:
+        #     print(f"Error fetching rendered HTML from {url}: {e}")
+        #     return None
 
     # 단일 페이지 크롤링
     async def crawl_page(self, crawler, page_no):
@@ -168,7 +217,7 @@ class InterParkReviewCrawler:
         return []
 
     """여러 페이지 순차적 크롤링"""
-    async def parse_review(self, start_page=1, end_page=1):
+    async def parse_review(self, start_page, end_page):
         async with AsyncWebCrawler(verbose=True) as crawler:
             self.crawler = crawler
             for page_no in range(start_page, end_page + 1):
@@ -192,7 +241,7 @@ class InterParkReviewCrawler:
 async def main():
     crawler = InterParkReviewCrawler()
     # 1페이지부터 n페이지까지 크롤링
-    await crawler.parse_review(start_page=1, end_page=1)
+    await crawler.parse_review(start_page=1, end_page=2974)
 
 if __name__ == "__main__":
     asyncio.run(main())
