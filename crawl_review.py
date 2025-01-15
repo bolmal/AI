@@ -231,7 +231,7 @@ class InterParkReviewCrawler:
             if self.results:
                 df = pd.DataFrame(self.results)
                 df = df.drop_duplicates()
-                filter_df = df.iloc[7:22, :10]  # :8은 column_8 이전의 열까지만 선택
+                filter_df = df.iloc[7:, :10]  # :8은 column_8 이전의 열까지만 선택
                 filter_df.to_csv('interpark_reviews.csv', index=False, encoding='utf-8-sig')
                 print(f"\n크롤링 완료: 총 {len(filter_df)}개의 리뷰가 저장되었습니다.")
 
@@ -241,7 +241,7 @@ class InterParkReviewCrawler:
 async def main():
     crawler = InterParkReviewCrawler()
     # 1페이지부터 n페이지까지 크롤링
-    await crawler.parse_review(start_page=1, end_page=2974)
+    await crawler.parse_review(start_page=1, end_page=10)
 
 if __name__ == "__main__":
     asyncio.run(main())
