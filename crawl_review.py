@@ -6,6 +6,7 @@ from urllib.parse import urljoin, parse_qs, urlencode
 from playwright.async_api import async_playwright
 import re
 import json
+import gc
 
 class InterParkReviewCrawler:
     def __init__(self):
@@ -57,7 +58,6 @@ class InterParkReviewCrawler:
                 return None  # 유효하지 않은 행은 건너뛰기
 
             row_data['url'] = urljoin(self.base_url, links[1].get('href', ''))
-            print(f"real_rink : {row_data['url']}")
             if not row_data['url']:  # URL이 없으면 건너뛰기
                 return None
 
@@ -120,9 +120,7 @@ class InterParkReviewCrawler:
                     if href and 'GoodsCode=' in href:
                         # URL 파싱하여 GoodsCode 값 추출
                         concert_link = href
-                        print(f"concert_link : {href}\n")
                         concert_title = await self.crawl_review_concert_title_page(url=concert_link)
-                        print(f"concert_title : {concert_title}\n")
                         detailed_data = concert_title
                         break
             else:
@@ -160,39 +158,6 @@ class InterParkReviewCrawler:
             print(f"Error fetching rendered HTML from {url}: {e}")
             return None
 
-        #         concert_title = soup.find('h2', class_='prdTitle')
-        #         if concert_title:
-        #             print(f"concert_title1 : {concert_title}\n")
-        #             print(f"concert_title2 : {concert_title.get_text().strip()}\n")
-        #             return concert_title.get_text().strip()
-        #         else :
-        #             # 디버깅을 위한 정보
-        #             print("\n=== DEBUG INFO ===")
-        #             print("Page content length:", len(result.html))
-        #             print("\nFirst 200 chars of HTML:")
-        #             print(result.html[:200])
-        #             print("\nAll h2 tags:")
-        #             print([h2.get_text() for h2 in soup.find_all('h2')])
-        #
-        #             return concert_title.get_text().strip()
-        #     else :
-        #         print("공연 제목 X")
-        # except Exception as e:
-        #     print(f"공연 제목 크롤링 중 에러 발생: {str(e)}")
-        #     return None
-        # try:
-        #     async with async_playwright() as p:
-        #         browser = await p.chromium.launch(headless=True)  # 백그라운드 실행
-        #         page = await browser.new_page()
-        #         await page.goto(url, timeout=60000, wait_until='networkidle')  # 네트워크 요청 완료 대기
-        #         rendered_html = await page.content()  # 렌더링된 HTML 가져오기
-        #         await browser.close()
-        #         print(f"힘들다 {rendered_html}")
-        #         return None
-        # except Exception as e:
-        #     print(f"Error fetching rendered HTML from {url}: {e}")
-        #     return None
-
     # 단일 페이지 크롤링
     async def crawl_page(self, crawler, page_no):
         url = self.create_page_url(page_no)
@@ -225,23 +190,38 @@ class InterParkReviewCrawler:
                 page_results = await self.crawl_page(crawler, page_no)
                 self.results.extend(page_results)
                 print(f"페이지 {page_no} 완료: {len(page_results)}개의 리뷰 수집")
-                await asyncio.sleep(1)
 
             # 결과 저장
             if self.results:
                 df = pd.DataFrame(self.results)
                 df = df.drop_duplicates()
                 filter_df = df.iloc[7:, :10]  # :8은 column_8 이전의 열까지만 선택
-                filter_df.to_csv('interpark_reviews.csv', index=False, encoding='utf-8-sig')
+                filter_df.to_csv('interpark_reviews.csv',mode= 'a', index=False, encoding='utf-8-sig',header=False)
                 print(f"\n크롤링 완료: 총 {len(filter_df)}개의 리뷰가 저장되었습니다.")
+                self.results = []  # 저장 후 메모리에서 데이터 제거
+                gc.collect()  # Garbage Collection 강제 실행
 
             else:
                 print("크롤링된 데이터가 없습니다.")
 
+            await asyncio.sleep(1)
+
+
 async def main():
     crawler = InterParkReviewCrawler()
-    # 1페이지부터 n페이지까지 크롤링
-    await crawler.parse_review(start_page=1, end_page=10)
+
+    # 전체 페이지를 10페이지씩 나누어 크롤링
+    # 현재 30페이지까지 완료
+    start_page = 31
+    end_page = 100
+    batch_size = 10
+
+    for batch_start in range(start_page, end_page + 1, batch_size):
+        batch_end = min(batch_start + batch_size - 1, end_page)
+        print(f"\n[작업 범위] {batch_start} ~ {batch_end} 페이지 크롤링 시작")
+        await crawler.parse_review(start_page=batch_start, end_page=batch_end)
+        print(f"[작업 범위] {batch_start} ~ {batch_end} 페이지 크롤링 완료\n")
+        await asyncio.sleep(10)  # 다음 배치 전 대기 시간 추가
 
 if __name__ == "__main__":
     asyncio.run(main())
