@@ -21,7 +21,7 @@ class ConcertParser:
         Always output valid JSON in Korean following this exact format:
         {
             "concert_name": string,        // 공연명
-            "genre": string | null,        // 장르
+            "concert_poster:" string | null,  // 포스터      
             "performance_rounds": [        // 공연 회차 정보
                 {
                     "round": number,
@@ -35,8 +35,8 @@ class ConcertParser:
             },
             "age_limit": string | null,    // 관람연령
             "booking_limit": string | null, // 예매제한
-            "selling_platform": "인터파크",  // 판매처
-            "ticket_status": string,       // 티켓 오픈 여부
+            "selling_platform": "INTERPARK",  // 판매처
+            "ticket_status": boolen,       // 티켓 오픈 여부
             "ticket_open_dates": {       // 티켓 오픈 일정
                     "round": string          // "YYYY-MM-DD HH:mm" 형식
                 }
@@ -53,7 +53,7 @@ class ConcertParser:
         1. 날짜와 시간은 모두 YYYY-MM-DD HH:mm 형식을 사용
         2. 가격은 숫자로 변환 (예: "90,000원" → 90000)
         3. 정보가 없는 경우 null 사용
-        4. 티켓 상태는 "예매가능" 또는 "티켓 미오픈" 중 하나로 표시
+        4. 티켓 상태는 True 또는 False 중 하나로 표시
 
         공연 정보:
         {concert_text}
@@ -106,37 +106,26 @@ class ConcertParser:
 
 async def crawl_and_parse_concerts():
     crawled_concerts = []
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Cache-Control': 'no-cache',  # 캐시 무시
+        'Cookie': ''  # 기존 쿠키 클리어
+    }
     async with AsyncWebCrawler(verbose=True) as crawler:
         # 메인 페이지 크롤링
-        url = "https://ticket.interpark.com/webzine/paper/TPNoticeList.asp?tid1=in_scroll&tid2=ticketopen&tid3=board_main&tid4=board_main"
-        result = await crawler.arun(
-            url=url,
-            css_selector="iframe#ifRmNotice",  # iframe 태그 선택
-            process_iframes=False  # iframe URL만 추출하므로 False
-        )
-
-        # BeautifulSoup으로 iframe의 src 추출
-        soup = BeautifulSoup(result.html, "html.parser")
-        iframe = soup.find("iframe", {"id": "iFrmNotice"})  # id가 iFrmNotice인 iframe 찾기
-        iframe_src = iframe["src"] if iframe else None
-
-        if not iframe_src:
-            print("iframe src를 찾을 수 없습니다.")
-            return
-
-        # URL 결합하여 절대 경로 생성
-        iframe_url = urljoin(url, iframe_src)
-        print(f"Resolved iframe URL: {iframe_url}")
+        url = "https://ticket.interpark.com/webzine/paper/TPNoticeList_iFrame.asp?bbsno=0&pageno=1&stext=&KindOfGoods=&Genre=&sort="
 
         # iframe 내부 URL 크롤링
-        iframe_result = await crawler.arun(
-            url=iframe_url,
+        result = await crawler.arun(
+            url=url,
+            headers=headers,
             css_selector="td.subject",  # 필요한 데이터 선택
-            process_iframes=False
+            process_iframes=False,
+            allow_redirects=False  # 리다이렉션 비활성화
         )
 
         # BeautifulSoup으로 데이터 파싱
-        iframe_soup = BeautifulSoup(iframe_result.html, "html.parser")
+        iframe_soup = BeautifulSoup(result.html, "html.parser")
         rows = iframe_soup.select("tr")  # 각 행을 선택 <- 각 행마다 new 마크가 있는지 확인하기 위함
 
         # 결과 처리
@@ -154,16 +143,18 @@ async def crawl_and_parse_concerts():
             if type_tag:
                 concert_info['genre'] = type_tag.text.strip()
 
+            if not concert_info.get('genre','') in ['콘서트','HOT']:
+                continue
+
             if subject_tag:
                 concert_info['title'] = subject_tag.get_text(strip=True)
                 link = subject_tag.get("href")
-                absolute_link = urljoin(iframe_url, link)
+                absolute_link = urljoin(url, link)
                 concert_info['link'] = absolute_link
 
-                # <img> 태그 확인
-                img_tag = row.select_one("td.subject img.ico_new")
-                is_new = bool(img_tag)  # <img> 태그가 있으면 True, 없으면 False
-                concert_info['is_new'] = bool(img_tag)
+                # new <img> 태그 확인 (새로 뜬 공지)
+                new_img_tag = row.select_one("td.subject img.ico_new")
+                concert_info['is_new'] = bool(new_img_tag)
 
                 if absolute_link:
                     async with AsyncWebCrawler(verbose=True) as crawler_concert:
@@ -176,6 +167,13 @@ async def crawl_and_parse_concerts():
                     # <div class="info"> 태그 선택
                     info_div = soup_concert.select_one("div.info")
                     if info_div:
+                        poster_tag = info_div.find("img")  # <img> 태그 찾기
+                        if poster_tag :
+                            img_url = poster_tag.get("src")
+                            # 프로토콜이 없는 경우 http: 추가
+                            if img_url.startswith("//"):
+                                img_url = "https:" + img_url
+                            concert_info['poster'] = img_url
                         concert_info['info'] = info_div.text.strip()
                     # <div class="desc"> 태그 선택
                     desc_div = soup_concert.select_one("div.desc")  # 또는 soup.find("div", class_="desc")
@@ -185,22 +183,23 @@ async def crawl_and_parse_concerts():
                     # <a class="btn_book"> 태그 처리 예약 버튼
                     book_button_tag = soup_concert.select_one("div.info div.btn a.btn_book")
                     if book_button_tag:
-                        book_link = urljoin(iframe_url, book_button_tag.get("href"))
+                        book_link = urljoin(url, book_button_tag.get("href"))
                         concert_info['booking_link'] = book_link
-                        concert_info['ticket_status'] = "예매가능"
+                        concert_info['ticket_status'] = "True"
                     else :
-                        concert_info['ticket_status'] = "티켓 미오픈"
+                        concert_info['ticket_status'] = "False"
 
                     # 크롤링된 모든 정보를 하나의 문자열로 변환
                     concert_text = f"""
                     공연명: {concert_info.get('title', '')}
+                    공연 포스터: {concert_info.get('poster', '')}
                     장르: {concert_info.get('genre', '')}
                     티켓상태: {concert_info.get('ticket_status', '')}
                     상세정보: {concert_info.get('info', '')}
                     공연설명: {concert_info.get('description', '')}
                     예매링크: {concert_info.get('booking_link', '티켓 미오픈')}
                     """
-
+                    print(concert_text)
                     crawled_concerts.append(concert_text)
     # GPT 파싱 처리
     parser = ConcertParser()
