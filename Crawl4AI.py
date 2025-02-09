@@ -1,5 +1,6 @@
 import asyncio
-from crawl4ai import AsyncWebCrawler
+from crawl4ai import AsyncWebCrawler, CacheMode
+from crawl4ai.async_configs import CrawlerRunConfig
 from bs4 import BeautifulSoup  # HTML 파싱용 라이브러리
 from urllib.parse import urljoin  # 절대 경로 변환을 위한 라이브러리
 import os
@@ -8,9 +9,10 @@ from typing import List, Dict
 import time
 import json
 from datetime import datetime
+import requests
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-
+API_URL = "http://dev.bolmal.shop/concerts/save"
 
 class ConcertParser:
     def __init__(self):
@@ -22,10 +24,15 @@ class ConcertParser:
         {
             "concert_name": string,        // 공연명
             "concert_poster:" string | null,  // 포스터      
+            "casting": [                   // 캐스팅
+                {
+                    "name": string
+                }
+            ]                  
             "performance_rounds": [        // 공연 회차 정보
                 {
                     "round": number,
-                    "datetime": "YYYY-MM-DD HH:mm"
+                    "datetime": "YYYY-MM-DDTHH:MM:SS"
                 }
             ],
             "venue": string | null,        // 공연장소
@@ -38,7 +45,7 @@ class ConcertParser:
             "selling_platform": "INTERPARK",  // 판매처
             "ticket_status": boolen,       // 티켓 오픈 여부
             "ticket_open_dates": {       // 티켓 오픈 일정
-                    "round": string          // "YYYY-MM-DD HH:mm" 형식
+                    "round": YYYY-MM-DDTHH:MM:SS
                 }
             "booking_link": string | null,  // 예매 링크
             "additional_info": {           // 추가 정보
@@ -50,7 +57,7 @@ class ConcertParser:
         prompt = f"""다음 공연 정보를 파싱하여 JSON 형식으로 변환하세요.
 
         규칙:
-        1. 날짜와 시간은 모두 YYYY-MM-DD HH:mm 형식을 사용
+        1. 날짜와 시간은 모두 YYYY-MM-DDTHH:MM:SS 형식을 사용
         2. 가격은 숫자로 변환 (예: "90,000원" → 90000)
         3. 정보가 없는 경우 null 사용
         4. 티켓 상태는 True 또는 False 중 하나로 표시
@@ -106,6 +113,7 @@ class ConcertParser:
 
 async def crawl_and_parse_concerts():
     crawled_concerts = []
+    config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS) # 캐시사용 X
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Cache-Control': 'no-cache',  # 캐시 무시
@@ -121,9 +129,9 @@ async def crawl_and_parse_concerts():
             headers=headers,
             css_selector="td.subject",  # 필요한 데이터 선택
             process_iframes=False,
-            allow_redirects=False  # 리다이렉션 비활성화
+            config=config
         )
-
+        print("actural URL : ",result.url)
         # BeautifulSoup으로 데이터 파싱
         iframe_soup = BeautifulSoup(result.html, "html.parser")
         rows = iframe_soup.select("tr")  # 각 행을 선택 <- 각 행마다 new 마크가 있는지 확인하기 위함
@@ -159,7 +167,7 @@ async def crawl_and_parse_concerts():
                 if absolute_link:
                     async with AsyncWebCrawler(verbose=True) as crawler_concert:
                         # 메인 페이지 크롤링
-                        result_concert = await crawler_concert.arun(url=absolute_link)
+                        result_concert = await crawler_concert.arun(url=absolute_link,config=config)
 
                     # BeautifulSoup 객체 생성
                     soup_concert = BeautifulSoup(result_concert.html, 'html.parser')
@@ -224,6 +232,14 @@ async def main():
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
+    # HTTP 헤더 설정 (JSON 형식)
+    headers = {"Content-Type": "application/json"}
+
+    response = requests.post(API_URL, headers=headers, json=file_path)  # `json=data` 사용
+
+    # 응답 확인
+    print("응답 코드:", response.status_code)
+    print("응답 데이터:", response.json())  # JSON 응답 받기
 
 if __name__ == "__main__":
     asyncio.run(main())
