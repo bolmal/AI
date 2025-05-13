@@ -4,15 +4,18 @@ from crawl4ai.async_configs import CrawlerRunConfig
 from bs4 import BeautifulSoup  # HTML 파싱용 라이브러리
 from urllib.parse import urljoin  # 절대 경로 변환을 위한 라이브러리
 import os
+
+from markdown_it.rules_core.normalize import NULL_RE
 from openai import OpenAI
 from typing import List, Dict
 import time
 import json
 from datetime import datetime
+from random import uniform
 import requests
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-API_URL = "http://dev.bolmal.shop/concerts/save"
+API_URL = "https://dev.bolmal.shop/save"
 
 class ConcertParser:
     def __init__(self):
@@ -24,6 +27,10 @@ class ConcertParser:
         {
             "concert_name": string,        // 공연명
             "concert_poster:" string | null,  // 포스터      
+            "genre": string,              // 장르 (하나만 선택)
+            "concert_mood": string,       // 공연 분위기 (하나만 선택)
+            "concert_style": string,      // 공연 스타일 (하나만 선택)
+            "concert_type": string,       // 공연 유형 (하나만 선택)
             "casting": [                   // 캐스팅
                 {
                     "name": string
@@ -48,8 +55,7 @@ class ConcertParser:
                     "round": YYYY-MM-DDTHH:MM:SS
                 }
             "booking_link": string | null,  // 예매 링크
-            "additional_info": {           // 추가 정보
-            }
+            "additional_info": "이것은 하나의 문자열입니다."  // 추가정보
         }"""
 
     def parse_single_concert(self, concert_text: str) -> dict:
@@ -60,8 +66,24 @@ class ConcertParser:
         1. 날짜와 시간은 모두 YYYY-MM-DDTHH:MM:SS 형식을 사용
         2. 가격은 숫자로 변환 (예: "90,000원" → 90000)
         3. 정보가 없는 경우 null 사용
-        4. 티켓 상태는 True 또는 False 중 하나로 표시
-
+        4. ticket_status는 True 또는 False 중 하나로 표시
+        5. ticket_open_dates는 다음 형식을 반드시 따를 것:
+           - key는 예매 유형 또는 회차 번호
+           - value는 YYYY-MM-DDTHH:MM:SS 형식의 날짜
+        6. 다음 필드들은 각각 정해진 값 중 하나만 선택해야 합니다:
+            genre는 다음 중 하나만 선택:
+            ["발라드","댄스","랩/힙합","아이돌","R&B/Soul","인디음악","록/메탈","성인가요/트로트",
+            "포크/블루스","일렉트로니카","클래식","재즈","J-POP","POP","키즈","CCM","국악"]
+       
+            concert_mood는 다음 중 하나만 선택:
+            ["Emotional","Energetic","Dreamy","Grand","Calm","Fun","Intense"]
+       
+            concert_style는 다음 중 하나만 선택:
+            ["Live Band","Acoustic","Orchestra","Solo Performance","Dance Performance","Theatrical Concert"]
+       
+            concert_type는 다음 중 하나만 선택:
+            ["Festival","Concert","Music Show","Fan Meeting","Talk Concert"]
+        
         공연 정보:
         {concert_text}
         """
@@ -111,17 +133,75 @@ class ConcertParser:
 
         return results
 
-async def crawl_and_parse_concerts():
+"""재시도 로직이 포함된 크롤링 함수"""
+async def crawl_with_retry(max_retries: int = 2):
+    min_num_of_error = 100
+    final_crawled_concert = False
+    parsed_results = False
+    for attempt in range(1,max_retries+1):
+        try:
+            # 랜덤 대기 시간 추가
+            await asyncio.sleep(uniform(3, 5))
+
+            # 크롤링 시도
+            crawrled_data, num_of_error = await crawl_and_parse_concerts(page_num=attempt)
+            print("에러수 :",num_of_error)
+            if parsed_results:
+                parsed_results.append(crawrled_data)
+            else:
+                parsed_results=crawrled_data
+            # if num_of_error < min_num_of_error:
+            #     min_num_of_error = num_of_error
+            #     final_crawled_concert = crawrled_data
+
+            #     if parsed_results:
+            #         # GPT 파싱 처리
+            #         parser = ConcertParser()
+            #         parsed_results.append(parser.parse_multiple_concerts(final_crawled_concert))
+            #         print(parsed_results)
+            #     else:
+            #         # GPT 파싱 처리
+            #         parser = ConcertParser()
+            #         parsed_results=parser.parse_multiple_concerts(final_crawled_concert)
+            #         print(parsed_results)
+
+            # else:
+            #     print("크롤링 문제")
+
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed for crawling",e)
+
+        await asyncio.sleep(5)  # 재시도 전 대기
+
+    return parsed_results
+
+    # if final_crawled_concert:
+    #     # GPT 파싱 처리
+    #     parser = ConcertParser()
+    #     parsed_results = parser.parse_multiple_concerts(final_crawled_concert)
+    #     print(parsed_results)
+    #     return parsed_results
+    # else:
+    #     print("크롤링 문제")
+
+
+async def crawl_and_parse_concerts(page_num: int = 0):
     crawled_concerts = []
-    config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS) # 캐시사용 X
+    errer_crawled_concerts = 0
+    config = CrawlerRunConfig(
+        cache_mode=CacheMode.BYPASS, # 캐시사용 X
+        wait_for_images=True, # 크롤러는 HTML을 마무리하기 전에 이미지 로딩이 완료되었는지 확인
+        scan_full_page=True, # 크롤러에게 위에서 아래로 스크롤을 시도
+        scroll_delay=0.5, # 각 스크롤 단계 사이에 0.5초 동안 일시 정지
+    )
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Cache-Control': 'no-cache',  # 캐시 무시
         'Cookie': ''  # 기존 쿠키 클리어
     }
     async with AsyncWebCrawler(verbose=True) as crawler:
-        # 메인 페이지 크롤링
-        url = "https://ticket.interpark.com/webzine/paper/TPNoticeList_iFrame.asp?bbsno=0&pageno=1&stext=&KindOfGoods=&Genre=&sort="
+        # 메인 페이지(장르 : 콘서트) 크롤링
+        url = f"https://ticket.interpark.com/webzine/paper/TPNoticeList_iFrame.asp?bbsno=34&pageno={page_num}&KindOfGoods=TICKET&Genre=2&sort=WriteDate&stext="
 
         # iframe 내부 URL 크롤링
         result = await crawler.arun(
@@ -138,7 +218,7 @@ async def crawl_and_parse_concerts():
 
         # 결과 처리
         for row in rows:
-
+            await asyncio.sleep(1)
             #  각 공연 정보를 저장할 딕셔너리
             concert_info = {}
 
@@ -148,8 +228,10 @@ async def crawl_and_parse_concerts():
             type_tag = row.select_one("td.type")
 
             # 이 부분에 원하는 타입의 장르만 가져 올 수 있다
-            if type_tag:
+            if type_tag and type_tag.text:
                 concert_info['genre'] = type_tag.text.strip()
+            else:
+                continue
 
             if not concert_info.get('genre','') in ['콘서트','HOT']:
                 continue
@@ -158,41 +240,65 @@ async def crawl_and_parse_concerts():
                 concert_info['title'] = subject_tag.get_text(strip=True)
                 link = subject_tag.get("href")
                 absolute_link = urljoin(url, link)
+                print("링크:",absolute_link)
                 concert_info['link'] = absolute_link
 
                 # new <img> 태그 확인 (새로 뜬 공지)
                 new_img_tag = row.select_one("td.subject img.ico_new")
                 concert_info['is_new'] = bool(new_img_tag)
 
+                print("new img tag :",new_img_tag)
+
                 if absolute_link:
+                    await asyncio.sleep(3)  # 상세링크 크롤링 전 대기
+
                     async with AsyncWebCrawler(verbose=True) as crawler_concert:
                         # 메인 페이지 크롤링
                         result_concert = await crawler_concert.arun(url=absolute_link,config=config)
 
+                        if not result_concert.success:
+                            print(f"Crawl failed: {result_concert.error_message}")
+                            print(f"Status code: {result_concert.status_code}")
+                            errer_crawled_concerts += 1
+
                     # BeautifulSoup 객체 생성
                     soup_concert = BeautifulSoup(result_concert.html, 'html.parser')
 
-                    # <div class="info"> 태그 선택
-                    info_div = soup_concert.select_one("div.info")
-                    if info_div:
-                        poster_tag = info_div.find("img")  # <img> 태그 찾기
+                    # 포스터 사진
+                    poster_div = soup_concert.select_one("div.DetailSummary_imageContainer__OmWus")
+                    if poster_div:
+                        poster_tag = poster_div.find("img")  # <img> 태그 찾기
                         if poster_tag :
                             img_url = poster_tag.get("src")
                             # 프로토콜이 없는 경우 http: 추가
                             if img_url.startswith("//"):
                                 img_url = "https:" + img_url
                             concert_info['poster'] = img_url
-                        concert_info['info'] = info_div.text.strip()
-                    # <div class="desc"> 태그 선택
-                    desc_div = soup_concert.select_one("div.desc")  # 또는 soup.find("div", class_="desc")
-                    if desc_div:
-                        concert_info['description'] = desc_div.text.strip()
+                    else:
+                        errer_crawled_concerts += 1
+                        if poster_div and poster_div.text:
+                            concert_info['info'] = poster_div.text.strip()
 
+                    # 공연 요약 정보
+                    concert_summary_div = soup_concert.select_one("article.DetailSummary_infoBox__5we4P")
+                    if concert_summary_div and concert_summary_div.text:
+                        concert_info['summary'] = concert_summary_div.text.strip()
+                    else:
+                        print("concert_summary_div 없음 또는 내용 없음:", concert_summary_div)
+                        concert_info['summary'] = None
+                    
+                    # 공연 디테일 정보
+                    concert_detail_div = soup_concert.select_one(".DetailInfo_contents__grsx5.DetailInfo_isOld__4UynI")
+                    if concert_detail_div and concert_detail_div.text:
+                        concert_info['description'] = concert_detail_div.text.strip()
+                    else:
+                        print("concert_detail_div 없음 또는 내용 없음:", concert_detail_div)
+                        concert_info['description'] = None
+                        
                     # <a class="btn_book"> 태그 처리 예약 버튼
-                    book_button_tag = soup_concert.select_one("div.info div.btn a.btn_book")
+                    book_button_tag = soup_concert.select_one("button.DetailBooking_bookingBtn__uvSid")
                     if book_button_tag:
-                        book_link = urljoin(url, book_button_tag.get("href"))
-                        concert_info['booking_link'] = book_link
+                        concert_info['booking_link'] = absolute_link
                         concert_info['ticket_status'] = "True"
                     else :
                         concert_info['ticket_status'] = "False"
@@ -203,22 +309,20 @@ async def crawl_and_parse_concerts():
                     공연 포스터: {concert_info.get('poster', '')}
                     장르: {concert_info.get('genre', '')}
                     티켓상태: {concert_info.get('ticket_status', '')}
-                    상세정보: {concert_info.get('info', '')}
+                    공연정보: {concert_info.get('info', '')}
+                    공연요약: {concert_info.get('summary', '')}
                     공연설명: {concert_info.get('description', '')}
                     예매링크: {concert_info.get('booking_link', '티켓 미오픈')}
                     """
                     print(concert_text)
                     crawled_concerts.append(concert_text)
-    # GPT 파싱 처리
-    parser = ConcertParser()
-    parsed_results = parser.parse_multiple_concerts(crawled_concerts)
-    print(parsed_results)
-    return parsed_results
+
+    return crawled_concerts, errer_crawled_concerts
 
 # 실행 코드
 async def main():
     # 크롤링 코드 실행
-    results = await crawl_and_parse_concerts()
+    results = await crawl_with_retry()
 
     # 결과 제출
     current_dir = os.getcwd()
@@ -235,11 +339,14 @@ async def main():
     # HTTP 헤더 설정 (JSON 형식)
     headers = {"Content-Type": "application/json"}
 
-    response = requests.post(API_URL, headers=headers, json=file_path)  # `json=data` 사용
+    # # JSON 파일 열기 및 데이터 로드
+    # with open(f'crawl_new_concerts/{file_path}', 'r', encoding='utf-8') as f:
+    #     data_list = json.load(f)  # 이제 data_list는 Python 리스트입니다
+
+    # response = requests.post(API_URL, headers=headers, json=data_list)  # `json=data` 사용
 
     # 응답 확인
-    print("응답 코드:", response.status_code)
-    print("응답 데이터:", response.json())  # JSON 응답 받기
+    # print("응답 코드:", response.status_code)
 
 if __name__ == "__main__":
     asyncio.run(main())
