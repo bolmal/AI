@@ -205,18 +205,7 @@ async def crawl_with_retry(max_retries: int = 1):
 async def crawl_and_parse_concerts(page_num: int = 0):
     crawled_concerts = []
     errer_crawled_concerts = 0
-    config = CrawlerRunConfig(
-        cache_mode=CacheMode.BYPASS, # 캐시사용 X
-        wait_for_images=True, # 크롤러는 HTML을 마무리하기 전에 이미지 로딩이 완료되었는지 확인
-        scan_full_page=True, # 크롤러에게 위에서 아래로 스크롤을 시도
-        scroll_delay=0.5, # 각 스크롤 단계 사이에 0.5초 동안 일시 정지
-    )
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Cache-Control': 'no-cache',  # 캐시 무시
-        'Cookie': ''  # 기존 쿠키 클리어
-    }
-    # async with AsyncWebCrawler(verbose=True) as crawler:
+
     # 메인 페이지(장르 : 콘서트) 크롤링
     url = "https://tickets.interpark.com/contents/notice?Genre=CONCERT"
     # URL 접속
@@ -228,24 +217,24 @@ async def crawl_and_parse_concerts(page_num: int = 0):
     scroll_amount = 900  # 임의의 스크롤 거리 (px)
 
     MAX_ITEMS = 15  # 원하는 최대 아이템 수 제한 (예: 100개까지)
-    scroll_count = 0
     index = 0
     items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
     print("아이템수",len(items))
+
     concert_info = {}
     while  processed_count < MAX_ITEMS:
-        if(scroll_count>0 and scroll_count%2==0):
-            index -= 5
+
         for i in range(5):
             # 매번 fresh하게 재선언!
             items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
-            if i >= len(items):
-                print(f"⚠️ index {i} 초과 — 항목 개수가 줄었음, 스킵")
-                continue
+            print(f"{processed_count}번째 아이템 수: ",len(items))
+            print(f"현재 인덱스 : {index}")
             MAX_ITEMS = max(len(items), MAX_ITEMS)
-            print("아이템 수: !!!!!!!",len(items))
+            if(index>=len(items)):
+                index-=5
+                MAX_ITEMS+=5
+            
             item = items[index]
-
             label = item.get_attribute("gtm-label")
 
             # 이미지 링크
@@ -296,22 +285,13 @@ async def crawl_and_parse_concerts(page_num: int = 0):
             concert_text = f"""
             공연명: {label}
             공연 포스터: {img}
-            티켓상태: {concert_info.get('ticket_status', '')}
+            예매링크: {current_url}
             공연정보: {texts}
-            공연요약: {concert_info.get('summary', '')}
-            공연설명: {concert_info.get('description', '')}
-            예매링크: {concert_info.get('booking_link', '티켓 미오픈')}
             """
             print(concert_text)
             crawled_concerts.append(concert_text)
             index+=1
             processed_count +=1
-
-        driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-        print(f"📜 스크롤 {scroll_amount}px 만큼 내림")
-        time.sleep(6)  # 로딩 대기
-        scroll_count+=1
-
 
     return crawled_concerts, errer_crawled_concerts
 
