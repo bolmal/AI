@@ -13,9 +13,26 @@ import json
 from datetime import datetime
 from random import uniform
 import requests
+import math
+
+from selenium import webdriver
+from selenium.webdriver.common.proxy import Proxy
+from selenium.webdriver.common.proxy import ProxyType
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 API_URL = "https://dev.bolmal.shop/save"
+
+# 셀레니움 드라이버 설정
+options = Options()
+options.page_load_strategy = 'normal'
+options.add_experimental_option("detach", True)
+driver = webdriver.Chrome(options=options)
+
 
 class ConcertParser:
     def __init__(self):
@@ -134,7 +151,7 @@ class ConcertParser:
         return results
 
 """재시도 로직이 포함된 크롤링 함수"""
-async def crawl_with_retry(max_retries: int = 2):
+async def crawl_with_retry(max_retries: int = 1):
     min_num_of_error = 100
     final_crawled_concert = False
     parsed_results = False
@@ -199,125 +216,221 @@ async def crawl_and_parse_concerts(page_num: int = 0):
         'Cache-Control': 'no-cache',  # 캐시 무시
         'Cookie': ''  # 기존 쿠키 클리어
     }
-    async with AsyncWebCrawler(verbose=True) as crawler:
-        # 메인 페이지(장르 : 콘서트) 크롤링
-        url = f"https://ticket.interpark.com/webzine/paper/TPNoticeList_iFrame.asp?bbsno=34&pageno={page_num}&KindOfGoods=TICKET&Genre=2&sort=WriteDate&stext="
+    # async with AsyncWebCrawler(verbose=True) as crawler:
+    # 메인 페이지(장르 : 콘서트) 크롤링
+    url = "https://tickets.interpark.com/contents/notice?Genre=CONCERT"
+    # URL 접속
+    driver.get(url)
+    # 암시적 대기
+    driver.implicitly_wait(5)
 
-        # iframe 내부 URL 크롤링
-        result = await crawler.arun(
-            url=url,
-            headers=headers,
-            css_selector="td.subject",  # 필요한 데이터 선택
-            process_iframes=False,
-            config=config
-        )
-        print("actural URL : ",result.url)
-        # BeautifulSoup으로 데이터 파싱
-        iframe_soup = BeautifulSoup(result.html, "html.parser")
-        rows = iframe_soup.select("tr")  # 각 행을 선택 <- 각 행마다 new 마크가 있는지 확인하기 위함
+    processed_count = 0
+    scroll_amount = 900  # 임의의 스크롤 거리 (px)
 
-        # 결과 처리
-        for row in rows:
-            await asyncio.sleep(1)
-            #  각 공연 정보를 저장할 딕셔너리
-            concert_info = {}
+    MAX_ITEMS = 15  # 원하는 최대 아이템 수 제한 (예: 100개까지)
+    scroll_count = 0
+    index = 0
+    items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
+    print("아이템수",len(items))
+    concert_info = {}
+    while  processed_count < MAX_ITEMS:
+        if(scroll_count>0 and scroll_count%2==0):
+            index -= 5
+        for i in range(5):
+            # 매번 fresh하게 재선언!
+            items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
+            if i >= len(items):
+                print(f"⚠️ index {i} 초과 — 항목 개수가 줄었음, 스킵")
+                continue
+            MAX_ITEMS = max(len(items), MAX_ITEMS)
+            print("아이템 수: !!!!!!!",len(items))
+            item = items[index]
 
-            # <td class="subject">와 <a> 태그 처리
-            subject_tag = row.select_one("td.subject a")
-            # 장르 가져오기
-            type_tag = row.select_one("td.type")
+            label = item.get_attribute("gtm-label")
 
-            # 이 부분에 원하는 타입의 장르만 가져 올 수 있다
-            if type_tag and type_tag.text:
-                concert_info['genre'] = type_tag.text.strip()
+            # 이미지 링크
+            try:
+                img = item.find_element(By.CSS_SELECTOR, "img").get_attribute("src")
+            except:
+                img = None
+
+            # 텍스트 정보
+            try:
+                texts = item.find_elements(By.CSS_SELECTOR, "ul.NoticeItem_contentsWrap__y1tdg li")
+                for j, t in enumerate(texts):
+                    print(f"text{j+1}:", t.text)
+            except:
+                pass
+
+            print("Image:", img)
+
+            # 상세 페이지로 이동
+            href = item.get_attribute("href")
+            if href:
+                print("Link (a 태그 직접):", href)
             else:
-                continue
+                try:
+                    item.click()
+                    print("클릭후")
 
-            if not concert_info.get('genre','') in ['콘서트','HOT']:
-                continue
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "article.DetailSummary_infoBox__5we4P"))
+                    )
 
-            if subject_tag:
-                concert_info['title'] = subject_tag.get_text(strip=True)
-                link = subject_tag.get("href")
-                absolute_link = urljoin(url, link)
-                print("링크:",absolute_link)
-                concert_info['link'] = absolute_link
+                    current_url = driver.current_url
+                    concert_info["booking_link"] = current_url
+                    print(f"[{processed_count}] 링크 수집 완료:", current_url)
 
-                # new <img> 태그 확인 (새로 뜬 공지)
-                new_img_tag = row.select_one("td.subject img.ico_new")
-                concert_info['is_new'] = bool(new_img_tag)
+                    driver.back()
 
-                print("new img tag :",new_img_tag)
+                    # 다시 목록 페이지 로딩 대기
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "a.TicketItem_ticketItem__"))
+                    )
 
-                if absolute_link:
-                    await asyncio.sleep(3)  # 상세링크 크롤링 전 대기
+                except Exception as e:
+                    print(f"[{i+1}] 클릭 실패:", e)
 
-                    async with AsyncWebCrawler(verbose=True) as crawler_concert:
-                        # 메인 페이지 크롤링
-                        result_concert = await crawler_concert.arun(url=absolute_link,config=config)
+            print("-" * 50)
+            # 크롤링된 모든 정보를 하나의 문자열로 변환
+            concert_text = f"""
+            공연명: {label}
+            공연 포스터: {img}
+            티켓상태: {concert_info.get('ticket_status', '')}
+            공연정보: {texts}
+            공연요약: {concert_info.get('summary', '')}
+            공연설명: {concert_info.get('description', '')}
+            예매링크: {concert_info.get('booking_link', '티켓 미오픈')}
+            """
+            print(concert_text)
+            crawled_concerts.append(concert_text)
+            index+=1
+            processed_count +=1
 
-                        if not result_concert.success:
-                            print(f"Crawl failed: {result_concert.error_message}")
-                            print(f"Status code: {result_concert.status_code}")
-                            errer_crawled_concerts += 1
+        driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
+        print(f"📜 스크롤 {scroll_amount}px 만큼 내림")
+        time.sleep(6)  # 로딩 대기
+        scroll_count+=1
 
-                    # BeautifulSoup 객체 생성
-                    soup_concert = BeautifulSoup(result_concert.html, 'html.parser')
-
-                    # 포스터 사진
-                    poster_div = soup_concert.select_one("div.DetailSummary_imageContainer__OmWus")
-                    if poster_div:
-                        poster_tag = poster_div.find("img")  # <img> 태그 찾기
-                        if poster_tag :
-                            img_url = poster_tag.get("src")
-                            # 프로토콜이 없는 경우 http: 추가
-                            if img_url.startswith("//"):
-                                img_url = "https:" + img_url
-                            concert_info['poster'] = img_url
-                    else:
-                        errer_crawled_concerts += 1
-                        if poster_div and poster_div.text:
-                            concert_info['info'] = poster_div.text.strip()
-
-                    # 공연 요약 정보
-                    concert_summary_div = soup_concert.select_one("article.DetailSummary_infoBox__5we4P")
-                    if concert_summary_div and concert_summary_div.text:
-                        concert_info['summary'] = concert_summary_div.text.strip()
-                    else:
-                        print("concert_summary_div 없음 또는 내용 없음:", concert_summary_div)
-                        concert_info['summary'] = None
-                    
-                    # 공연 디테일 정보
-                    concert_detail_div = soup_concert.select_one(".DetailInfo_contents__grsx5.DetailInfo_isOld__4UynI")
-                    if concert_detail_div and concert_detail_div.text:
-                        concert_info['description'] = concert_detail_div.text.strip()
-                    else:
-                        print("concert_detail_div 없음 또는 내용 없음:", concert_detail_div)
-                        concert_info['description'] = None
-                        
-                    # <a class="btn_book"> 태그 처리 예약 버튼
-                    book_button_tag = soup_concert.select_one("button.DetailBooking_bookingBtn__uvSid")
-                    if book_button_tag:
-                        concert_info['booking_link'] = absolute_link
-                        concert_info['ticket_status'] = "True"
-                    else :
-                        concert_info['ticket_status'] = "False"
-
-                    # 크롤링된 모든 정보를 하나의 문자열로 변환
-                    concert_text = f"""
-                    공연명: {concert_info.get('title', '')}
-                    공연 포스터: {concert_info.get('poster', '')}
-                    장르: {concert_info.get('genre', '')}
-                    티켓상태: {concert_info.get('ticket_status', '')}
-                    공연정보: {concert_info.get('info', '')}
-                    공연요약: {concert_info.get('summary', '')}
-                    공연설명: {concert_info.get('description', '')}
-                    예매링크: {concert_info.get('booking_link', '티켓 미오픈')}
-                    """
-                    print(concert_text)
-                    crawled_concerts.append(concert_text)
 
     return crawled_concerts, errer_crawled_concerts
+
+    #     # iframe 내부 URL 크롤링
+    #     result = await crawler.arun(
+    #         url=url,
+    #         headers=headers,
+    #         css_selector="td.subject",  # 필요한 데이터 선택
+    #         # process_iframes=False,
+    #         config=config
+    #     )
+    #     print("actural URL : ",result.url)
+        
+    #     # BeautifulSoup으로 데이터 파싱
+    #     iframe_soup = BeautifulSoup(result.html, "html.parser")
+    #     rows = iframe_soup.select_one("div.InfiniteList_ticket-list__dfe68")
+    #     # 결과 처리
+    #     for row in rows:
+    #         print("row:",row)
+    #         await asyncio.sleep(1)
+    #         #  각 공연 정보를 저장할 딕셔너리
+    #         concert_info = {}
+
+    #         # <td class="subject">와 <a> 태그 처리
+    #         subject_tag = row.select_one("td.subject a")
+    #         # 장르 가져오기
+    #         type_tag = row.select_one("td.type")
+
+    #         # 이 부분에 원하는 타입의 장르만 가져 올 수 있다
+    #         if type_tag and type_tag.text:
+    #             concert_info['genre'] = type_tag.text.strip()
+    #         else:
+    #             continue
+
+    #         if not concert_info.get('genre','') in ['콘서트','HOT']:
+    #             continue
+
+    #         if subject_tag:
+    #             concert_info['title'] = subject_tag.get_text(strip=True)
+    #             link = subject_tag.get("href")
+    #             absolute_link = urljoin(url, link)
+    #             print("링크:",absolute_link)
+    #             concert_info['link'] = absolute_link
+
+    #             # new <img> 태그 확인 (새로 뜬 공지)
+    #             new_img_tag = row.select_one("td.subject img.ico_new")
+    #             concert_info['is_new'] = bool(new_img_tag)
+
+    #             print("new img tag :",new_img_tag)
+
+    #             if absolute_link:
+    #                 await asyncio.sleep(3)  # 상세링크 크롤링 전 대기
+
+    #                 async with AsyncWebCrawler(verbose=True) as crawler_concert:
+    #                     # 메인 페이지 크롤링
+    #                     result_concert = await crawler_concert.arun(url=absolute_link,config=config)
+
+    #                     if not result_concert.success:
+    #                         print(f"Crawl failed: {result_concert.error_message}")
+    #                         print(f"Status code: {result_concert.status_code}")
+    #                         errer_crawled_concerts += 1
+
+    #                 # BeautifulSoup 객체 생성
+    #                 soup_concert = BeautifulSoup(result_concert.html, 'html.parser')
+
+    #                 # 포스터 사진
+    #                 poster_div = soup_concert.select_one("div.DetailSummary_imageContainer__OmWus")
+    #                 if poster_div:
+    #                     poster_tag = poster_div.find("img")  # <img> 태그 찾기
+    #                     if poster_tag :
+    #                         img_url = poster_tag.get("src")
+    #                         # 프로토콜이 없는 경우 http: 추가
+    #                         if img_url.startswith("//"):
+    #                             img_url = "https:" + img_url
+    #                         concert_info['poster'] = img_url
+    #                 else:
+    #                     errer_crawled_concerts += 1
+    #                     if poster_div and poster_div.text:
+    #                         concert_info['info'] = poster_div.text.strip()
+
+    #                 # 공연 요약 정보
+    #                 concert_summary_div = soup_concert.select_one("article.DetailSummary_infoBox__5we4P")
+    #                 if concert_summary_div and concert_summary_div.text:
+    #                     concert_info['summary'] = concert_summary_div.text.strip()
+    #                 else:
+    #                     print("concert_summary_div 없음 또는 내용 없음:", concert_summary_div)
+    #                     concert_info['summary'] = None
+                    
+    #                 # 공연 디테일 정보
+    #                 concert_detail_div = soup_concert.select_one(".DetailInfo_contents__grsx5.DetailInfo_isOld__4UynI")
+    #                 if concert_detail_div and concert_detail_div.text:
+    #                     concert_info['description'] = concert_detail_div.text.strip()
+    #                 else:
+    #                     print("concert_detail_div 없음 또는 내용 없음:", concert_detail_div)
+    #                     concert_info['description'] = None
+                        
+    #                 # <a class="btn_book"> 태그 처리 예약 버튼
+    #                 book_button_tag = soup_concert.select_one("button.DetailBooking_bookingBtn__uvSid")
+    #                 if book_button_tag:
+    #                     concert_info['booking_link'] = absolute_link
+    #                     concert_info['ticket_status'] = "True"
+    #                 else :
+    #                     concert_info['ticket_status'] = "False"
+
+    #                 # 크롤링된 모든 정보를 하나의 문자열로 변환
+    #                 concert_text = f"""
+    #                 공연명: {concert_info.get('title', '')}
+    #                 공연 포스터: {concert_info.get('poster', '')}
+    #                 장르: {concert_info.get('genre', '')}
+    #                 티켓상태: {concert_info.get('ticket_status', '')}
+    #                 공연정보: {concert_info.get('info', '')}
+    #                 공연요약: {concert_info.get('summary', '')}
+    #                 공연설명: {concert_info.get('description', '')}
+    #                 예매링크: {concert_info.get('booking_link', '티켓 미오픈')}
+    #                 """
+    #                 print(concert_text)
+    #                 crawled_concerts.append(concert_text)
+
+    # return crawled_concerts, errer_crawled_concerts
 
 # 실행 코드
 async def main():
