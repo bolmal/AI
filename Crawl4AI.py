@@ -4,16 +4,13 @@ from crawl4ai.async_configs import CrawlerRunConfig
 from bs4 import BeautifulSoup  # HTML 파싱용 라이브러리
 from urllib.parse import urljoin  # 절대 경로 변환을 위한 라이브러리
 import os
-
-from markdown_it.rules_core.normalize import NULL_RE
+import html
 from openai import OpenAI
 from typing import List, Dict
 import time
 import json
 from datetime import datetime
 from random import uniform
-import requests
-import math
 
 from selenium import webdriver
 from selenium.webdriver.common.proxy import Proxy
@@ -213,85 +210,82 @@ async def crawl_and_parse_concerts(page_num: int = 0):
     # 암시적 대기
     driver.implicitly_wait(5)
 
-    processed_count = 0
-    scroll_amount = 900  # 임의의 스크롤 거리 (px)
+    SCROLL_AMOUNT = 700
+    SCROLL_WAIT = 1.5
+    MAX_SCROLL_END_RETRY = 3
 
-    MAX_ITEMS = 15  # 원하는 최대 아이템 수 제한 (예: 100개까지)
-    index = 0
-    items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
-    print("아이템수",len(items))
+    seen_labels = set()
+    crawled_concerts = []
 
-    concert_info = {}
-    while  processed_count < MAX_ITEMS:
+    scroll_end_counter = 0
+    prev_seen_count = 0
 
-        for i in range(5):
-            # 매번 fresh하게 재선언!
-            items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
-            print(f"{processed_count}번째 아이템 수: ",len(items))
-            print(f"현재 인덱스 : {index}")
-            MAX_ITEMS = max(len(items), MAX_ITEMS)
-            if(index>=len(items)):
-                index-=5
-                MAX_ITEMS+=5
-            
-            item = items[index]
-            label = item.get_attribute("gtm-label")
+    while True:
+        items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
+        print(f"현재 화면 공연 수: {len(items)}")
 
-            # 이미지 링크
+        new_labels = []
+        for item in items:
             try:
-                img = item.find_element(By.CSS_SELECTOR, "img").get_attribute("src")
+                label = item.get_attribute("gtm-label")
+                if label and label not in seen_labels:
+                    new_labels.append(label)
+                    seen_labels.add(label)
             except:
-                img = None
+                continue
 
-            # 텍스트 정보
-            try:
-                texts = item.find_elements(By.CSS_SELECTOR, "ul.NoticeItem_contentsWrap__y1tdg li")
-                for j, t in enumerate(texts):
-                    print(f"text{j+1}:", t.text)
-            except:
-                pass
-
-            print("Image:", img)
-
-            # 상세 페이지로 이동
-            href = item.get_attribute("href")
-            if href:
-                print("Link (a 태그 직접):", href)
-            else:
+        for label in new_labels:
+            try:                
+                # 텍스트 정보
                 try:
-                    item.click()
-                    print("클릭후")
+                    texts = item.find_elements(By.CSS_SELECTOR, "ul.NoticeItem_contentsWrap__y1tdg li")
+                    info_list = [t.text.strip() for t in texts]
+                    info_str = ", ".join(info_list)
+                    print(f"공연정보: {info_str}")
+                except:
+                    pass
 
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "article.DetailSummary_infoBox__5we4P"))
-                    )
+                # 상세 링크
+                # 매번 fresh하게 클릭할 요소 다시 찾기
+                clickable = driver.find_element(By.CSS_SELECTOR, f"a[gtm-label='{label}']")
+                clickable.click()
 
-                    current_url = driver.current_url
-                    concert_info["booking_link"] = current_url
-                    print(f"[{processed_count}] 링크 수집 완료:", current_url)
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "article.DetailSummary_infoBox__5we4P"))
+                )
 
-                    driver.back()
+                current_url = driver.current_url
+                print(f"🎟️ [{label}] 상세 링크:", current_url)
 
-                    # 다시 목록 페이지 로딩 대기
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "a.TicketItem_ticketItem__"))
-                    )
+                concert_text = f"""
+                    공연명: {label}
+                    공연 정보: {info_str}
+                    예매링크: {current_url}
+                    """
+                crawled_concerts.append(concert_text)
+                print(concert_text)
 
-                except Exception as e:
-                    print(f"[{i+1}] 클릭 실패:", e)
+                driver.back()
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "a.TicketItem_ticketItem__"))
+                )
+            except Exception as e:
+                print(f"⚠️ a[gtm-label='{label}'] -- 처리 중 에러:", e)
+                continue
 
-            print("-" * 50)
-            # 크롤링된 모든 정보를 하나의 문자열로 변환
-            concert_text = f"""
-            공연명: {label}
-            공연 포스터: {img}
-            예매링크: {current_url}
-            공연정보: {texts}
-            """
-            print(concert_text)
-            crawled_concerts.append(concert_text)
-            index+=1
-            processed_count +=1
+        # 스크롤 종료 감지
+        if len(seen_labels) == prev_seen_count:
+            scroll_end_counter += 1
+            if scroll_end_counter >= MAX_SCROLL_END_RETRY:
+                print("✅ 더 이상 새로운 항목 없음. 종료.")
+                break
+        else:
+            scroll_end_counter = 0
+            prev_seen_count = len(seen_labels)
+
+        driver.execute_script(f"window.scrollBy(0, {SCROLL_AMOUNT});")
+        time.sleep(SCROLL_WAIT)
+
 
     return crawled_concerts, errer_crawled_concerts
 
