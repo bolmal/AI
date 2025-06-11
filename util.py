@@ -1,35 +1,3 @@
-import asyncio
-from crawl4ai import AsyncWebCrawler, CacheMode
-from crawl4ai.async_configs import CrawlerRunConfig
-from bs4 import BeautifulSoup  # HTML 파싱용 라이브러리
-from urllib.parse import urljoin  # 절대 경로 변환을 위한 라이브러리
-import os
-import html
-from openai import OpenAI
-from typing import List, Dict
-import time
-import json
-from datetime import datetime
-from random import uniform
-
-from selenium import webdriver
-from selenium.webdriver.common.proxy import Proxy
-from selenium.webdriver.common.proxy import ProxyType
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-API_URL = "https://dev.bolmal.shop/save"
-
-# 셀레니움 드라이버 설정
-options = Options()
-options.page_load_strategy = 'normal'
-options.add_experimental_option("detach", True)
-driver = webdriver.Chrome(options=options)
-
 
 class ConcertParser:
     def __init__(self):
@@ -97,6 +65,7 @@ class ConcertParser:
        
             concert_type는 다음 중 하나만 선택:
             ["Festival","Concert","Music Show","Fan Meeting","Talk Concert"]
+        7. 한국어가 아닌 것들은 무시하세요
         
         공연 정보:
         {concert_text}
@@ -198,96 +167,6 @@ async def crawl_with_retry(max_retries: int = 1):
     # else:
     #     print("크롤링 문제")
 
-
-async def crawl_and_parse_concerts(page_num: int = 0):
-    crawled_concerts = []
-    errer_crawled_concerts = 0
-
-    # 메인 페이지(장르 : 콘서트) 크롤링
-    url = "https://tickets.interpark.com/contents/notice?Genre=CONCERT"
-    # URL 접속
-    driver.get(url)
-    # 암시적 대기
-    driver.implicitly_wait(5)
-
-    SCROLL_AMOUNT = 700
-    SCROLL_WAIT = 1.5
-    MAX_SCROLL_END_RETRY = 3
-
-    seen_labels = set()
-    crawled_concerts = []
-
-    scroll_end_counter = 0
-    prev_seen_count = 0
-
-    while True:
-        items = driver.find_elements(By.CSS_SELECTOR, "a.TicketItem_ticketItem__")
-        print(f"현재 화면 공연 수: {len(items)}")
-
-        new_labels = []
-        for item in items:
-            try:
-                label = item.get_attribute("gtm-label")
-                if label and label not in seen_labels:
-                    new_labels.append(label)
-                    seen_labels.add(label)
-            except:
-                continue
-
-        for label in new_labels:
-            try:                
-                # 텍스트 정보
-                try:
-                    texts = item.find_elements(By.CSS_SELECTOR, "ul.NoticeItem_contentsWrap__y1tdg li")
-                    info_list = [t.text.strip() for t in texts]
-                    info_str = ", ".join(info_list)
-                    print(f"공연정보: {info_str}")
-                except:
-                    pass
-
-                # 상세 링크
-                # 매번 fresh하게 클릭할 요소 다시 찾기
-                clickable = driver.find_element(By.CSS_SELECTOR, f"a[gtm-label='{label}']")
-                clickable.click()
-
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "article.DetailSummary_infoBox__5we4P"))
-                )
-
-                current_url = driver.current_url
-                print(f"🎟️ [{label}] 상세 링크:", current_url)
-
-                concert_text = f"""
-                    공연명: {label}
-                    공연 정보: {info_str}
-                    예매링크: {current_url}
-                    """
-                crawled_concerts.append(concert_text)
-                print(concert_text)
-
-                driver.back()
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "a.TicketItem_ticketItem__"))
-                )
-            except Exception as e:
-                print(f"⚠️ a[gtm-label='{label}'] -- 처리 중 에러:", e)
-                continue
-
-        # 스크롤 종료 감지
-        if len(seen_labels) == prev_seen_count:
-            scroll_end_counter += 1
-            if scroll_end_counter >= MAX_SCROLL_END_RETRY:
-                print("✅ 더 이상 새로운 항목 없음. 종료.")
-                break
-        else:
-            scroll_end_counter = 0
-            prev_seen_count = len(seen_labels)
-
-        driver.execute_script(f"window.scrollBy(0, {SCROLL_AMOUNT});")
-        time.sleep(SCROLL_WAIT)
-
-
-    return crawled_concerts, errer_crawled_concerts
 
     #     # iframe 내부 URL 크롤링
     #     result = await crawler.arun(
@@ -405,36 +284,3 @@ async def crawl_and_parse_concerts(page_num: int = 0):
     #                 crawled_concerts.append(concert_text)
 
     # return crawled_concerts, errer_crawled_concerts
-
-# 실행 코드
-async def main():
-    # 크롤링 코드 실행
-    results = await crawl_with_retry()
-
-    # 결과 제출
-    current_dir = os.getcwd()
-    target_dir = os.path.join(current_dir, 'crawl_new_concerts')
-    os.makedirs(target_dir, exist_ok=True)
-    # 현재 날짜를 파일 이름으로 저장
-    current_date = datetime.now().strftime('%Y-%m-%d')  # 'YYYY-MM-DD' 형식
-    file_path = os.path.join(target_dir, f'{current_date}.json')
-
-    # JSON 파일로 저장
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-
-    # HTTP 헤더 설정 (JSON 형식)
-    headers = {"Content-Type": "application/json"}
-
-    # # JSON 파일 열기 및 데이터 로드
-    # with open(f'crawl_new_concerts/{file_path}', 'r', encoding='utf-8') as f:
-    #     data_list = json.load(f)  # 이제 data_list는 Python 리스트입니다
-
-    # response = requests.post(API_URL, headers=headers, json=data_list)  # `json=data` 사용
-
-    # 응답 확인
-    # print("응답 코드:", response.status_code)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
