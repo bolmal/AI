@@ -3,6 +3,14 @@ import json
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from datetime import datetime
+
+from models.schemas import Concert
+from parseDetail import parseDetail
+
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -76,6 +84,53 @@ class ConcertParser:
             print(f"❌ Error parsing concert: {e}")
             return None
 
+    @staticmethod
+    def make_json_with_langchain(concert_texts: list[str], api_key: str) -> list[dict]:
+        # 모델 초기화
+        model = ChatOpenAI(api_key=api_key, model="gpt-4-turbo", temperature=0.1)
+
+        # 출력 파서 설정 (Pydantic 모델과 연결)
+        parser = PydanticOutputParser(pydantic_object=Concert)
+
+        prompt = ChatPromptTemplate.from_template(
+            """
+            You are an expert Korean concert information parser.
+            Your task is to extract structured data from the user's concert information text and format it according to the provided schema.
+
+            Follow these general rules:
+            - Convert monetary values to integers (e.g., "90,000원" -> 90000).
+            - If information for an optional field is not present in the text, use null.
+            - Carefully determine the ticket_status based on the current date and sale dates.
+            - Ensure all generated URLs are valid and working.
+
+            {format_instructions}
+
+            Now, parse the following concert information:
+            ---
+            {concert_text}
+            """,
+            # partial_variables를 사용해 파서가 만든 포맷팅 지침을 프롬프트에 미리 삽입합니다.
+            partial_variables={"format_instructions": parser.get_format_instructions()},
+        )
+
+        # 3. LCEL로 컴포넌트들을 파이프처럼 연결
+        chain = prompt | model | parser
+
+        parsed_results = []
+        for text in concert_texts:
+            print(f"🔍 Parsing with LangChain...\n{text[:50]}...")
+            try:
+                # 체인 실행
+                parsed = chain.invoke({"concert_text": text})
+                # Pydantic 모델을 dict로 변환하여 저장
+                parsed_results.append(parsed.model_dump(mode='json'))
+            except Exception as e:
+                print(f"❌ Error parsing concert with LangChain: {e}")
+                
+        print("✅ 모든 공연 json으로 변환 완료 (LangChain)")
+        return parsed_results
+    
+
 def makeJson(finalOutput: list[str],api_key: str) -> list[str]:
     parser = ConcertParser(api_key)
     parsed_results = []
@@ -88,6 +143,5 @@ def makeJson(finalOutput: list[str],api_key: str) -> list[str]:
 
     print("✅ 모든 공연 json으로 변환 완료")
     return parsed_results
-
 # 실행 예시
 # makeJson(finalOutput,api_key=OPENAI_API_KEY)

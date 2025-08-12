@@ -11,7 +11,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 from parseDetail import parseDetail
-from makeJson import makeJson
+from makeJson import makeJson, ConcertParser
 
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -122,7 +122,8 @@ async def crawlConcert() -> list[str]:
     finalOutput = parseDetail(crawrledData)
 
     # json 형식으로 저장
-    result = makeJson(finalOutput,api_key=OPENAI_API_KEY)
+    # result = makeJson(finalOutput,api_key=OPENAI_API_KEY)
+    result = ConcertParser.make_json_with_langchain(finalOutput,OPENAI_API_KEY)
     return result
 
 # 실행 코드
