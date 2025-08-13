@@ -39,21 +39,28 @@ jobs:
           commit_message: "chore: 새로운 인터파크 콘서트 정보 업데이트"
           file_pattern: "crawl_new_concerts/*.json"
     
-      - name: Create GitHub Issue on new data
-        uses: actions/github-script@v7
-        with:
-          # 이슈 제목을 설정합니다.
-          title: "🎶 인터파크 새로운 콘서트 정보 업데이트 (${{ env.TODAY }})"
-          # 이슈 내용을 설정합니다. Markdown을 사용할 수 있습니다.
-          body: |
-            크롤러가 새로운 콘서트 정보를 발견하여 업데이트했습니다.
+      # 날짜 변수 만들기
+      - name: Set date
+        id: date
+        run: echo "today=$(TZ=Asia/Seoul date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
-            - **생성된 파일:** `${{ env.TODAY }}.json`
-            - **자세히 보기:** [리포지토리에서 최신 커밋 확인하기](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.commit.outputs.commit_hash }})
-            
-            내용을 확인해주세요!
-          # 이슈에 자동으로 라벨을 달아줍니다
-          labels: "콘서트, 크롤링"
-        env:
-          # 날짜 변수를 설정
-          TODAY: $(TZ=Asia/Seoul date +'%Y-%m-%d')
+      # 이슈 내용 파일 생성
+      - name: Create issue body file
+        run: |
+          cat <<EOF > issue_body.md
+          크롤러가 새로운 인터파크 콘서트 정보를 발견하여 업데이트했습니다.
+
+          - **생성된 파일:** ${{ steps.date.outputs.today }}.json
+          - **자세히 보기:** [리포지토리에서 최신 커밋 확인하기](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.commit.outputs.commit_hash }})
+
+          내용을 확인해주세요!
+          EOF
+
+      # 이슈 생성
+      - name: Create issue
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: 🎶 인터파크 새로운 콘서트 정보 업데이트 (${{ steps.date.outputs.today }})
+          content-filepath: issue_body.md
+          labels: 콘서트, 크롤링
+          token: ${{ secrets.GITHUB_TOKEN }}
