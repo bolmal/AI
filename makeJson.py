@@ -105,12 +105,29 @@ class ConcertParser:
 
             {format_instructions}
 
+            For the following fields, you MUST use one of the provided values. Do not use any other value.
+
+            For the 'genre' field, select only one from the following:
+            ["발라드","댄스","랩/힙합","아이돌","R&B/Soul","인디음악","록/메탈","성인가요/트로트",
+                "포크/블루스","일렉트로니카","클래식","재즈","J-POP","POP","키즈","CCM","국악"]
+
+            For the 'concert_mood' field, select only one from the following:
+            ["Emotional", "Energetic", "Dreamy", "Grand", "Calm", "Fun", "Intense"]
+
+            For the 'concert_style' field, select only one from the following:
+            ["Live Band", "Acoustic", "Orchestra", "Solo Performance", "Dance Performance", "Theatrical Concert"]
+
+            For the 'concert_type' field, select only one from the following:
+            ["Festival", "Concert", "Music Show", "Fan Meeting", "Talk Concert"]
+
             Now, parse the following concert information:
             ---
             {concert_text}
             """,
             # partial_variables를 사용해 파서가 만든 포맷팅 지침을 프롬프트에 미리 삽입합니다.
-            partial_variables={"format_instructions": parser.get_format_instructions()},
+            partial_variables={
+                "format_instructions": parser.get_format_instructions(),
+            },
         )
 
         # 3. LCEL로 컴포넌트들을 파이프처럼 연결
