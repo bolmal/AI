@@ -19,8 +19,11 @@ API_URL = "https://dev.bolmal.shop/save"
 
 # 셀레니움 드라이버 설정
 options = Options()
-options.page_load_strategy = 'normal'
-options.add_experimental_option("detach", True)
+options.add_argument("--headless")          # 브라우저 창을 띄우지 않음
+options.add_argument("--no-sandbox")        # 서버/루트 환경에서 실행 시 필수
+options.add_argument("--disable-dev-shm-usage")  # 리소스 부족 에러 방지
+options.add_argument("--disable-gpu")           # GPU 가속 비활성화
+# options.add_experimental_option("detach", True) ## 브라우저 창을 유지 (디버그용)
 driver = webdriver.Chrome(options=options)
 
 async def crawlConcerts() -> list[str]:
